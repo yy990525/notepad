@@ -1,0 +1,15 @@
+directories:
+  output: release
+  buildResources: build
+appId: com.worldtime.desktop
+productName: WorldTime
+files:
+  - filter:
+      - dist/**/*
+      - electron/**/*
+      - package.json
+linux:
+  target:
+    - AppImage
+  category: Utility
+electronVersion: 38.8.6
