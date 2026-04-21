@@ -6,6 +6,9 @@
     </div>
 
     <div class="titlebar-actions">
+      <button class="titlebar-btn" type="button" :aria-label="isAlwaysOnTop ? '取消置顶' : '窗口置顶'" @click="$emit('toggle-pin')">
+        {{ isAlwaysOnTop ? '📌' : '⊙' }}
+      </button>
       <button class="titlebar-btn" type="button" aria-label="最小化" @click="$emit('minimize')">—</button>
       <button class="titlebar-btn" type="button" :aria-label="isMaximized ? '还原' : '最大化'" @click="$emit('toggle-maximize')">
         {{ isMaximized ? '❐' : '□' }}
@@ -25,7 +28,11 @@ defineProps({
     type: Boolean,
     required: true,
   },
+  isAlwaysOnTop: {
+    type: Boolean,
+    required: true,
+  },
 });
 
-defineEmits(["minimize", "toggle-maximize", "close"]);
+defineEmits(["minimize", "toggle-maximize", "toggle-pin", "close"]);
 </script>
