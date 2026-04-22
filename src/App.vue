@@ -1,5 +1,10 @@
 <template>
-  <div class="window-shell" :data-theme="activeTheme.id" @drop.prevent="handleDrop" @dragover.prevent>
+  <div
+    class="window-shell"
+    :data-theme="activeTheme.id"
+    @drop.prevent="handleDrop"
+    @dragover.prevent
+  >
     <TitleBar
       :current-file-name="currentFileName"
       :is-maximized="isMaximized"
@@ -50,6 +55,47 @@
         @replace-all="handleReplaceAll"
         @theme-change="handleThemeChange"
       />
+      <aside class="time-capsule-panel" :class="{ collapsed: isCapsuleCollapsed }">
+        <button
+          class="action-btn compact capsule-toggle-btn"
+          type="button"
+          :aria-label="isCapsuleCollapsed ? '展开时间胶囊' : '收起时间胶囊'"
+          @click="isCapsuleCollapsed = !isCapsuleCollapsed"
+        >
+          <i
+            class="ri-lg"
+            :class="isCapsuleCollapsed ? 'ri-sidebar-unfold-line' : 'ri-sidebar-fold-line'"
+            aria-hidden="true"
+          />
+        </button>
+
+        <div class="time-capsule-head">
+          <div v-if="!isCapsuleCollapsed">
+            <p class="sidebar-card-title">时间胶囊</p>
+            <p class="sidebar-card-subtitle">自动每 20 秒留存一次，可一键恢复</p>
+          </div>
+        </div>
+
+        <div v-if="!isCapsuleCollapsed" class="time-capsule-body">
+          <button class="action-btn compact" type="button" @click="handleCaptureCapsule">立即留存</button>
+          <div class="recent-list" v-if="timeCapsules.length">
+            <button
+              v-for="item in timeCapsules"
+              :key="item.id"
+              type="button"
+              class="recent-file"
+              @click="handleRestoreCapsule(item.id)"
+            >
+              <span class="recent-file-name">{{ item.fileName }}</span>
+              <span class="recent-file-path">{{ new Date(item.createdAt).toLocaleString("zh-CN") }}</span>
+              <span class="capsule-preview">{{ item.preview }}</span>
+            </button>
+          </div>
+          <p v-else class="empty-copy">还没有胶囊记录，先输入点内容吧</p>
+        </div>
+
+        <div v-else class="capsule-collapsed-label" aria-hidden="true">时间胶囊</div>
+      </aside>
     </div>
   </div>
 </template>
@@ -61,6 +107,8 @@ import NotepadSidebar from "./components/NotepadSidebar.vue";
 import EditorPanel from "./components/EditorPanel.vue";
 
 const themes = [
+  { id: "dark", name: "暗夜黑", accent: "#4b5563", accentSoft: "#9ca3af" },
+  { id: "light", name: "晨雾白", accent: "#6b7280", accentSoft: "#9ca3af" },
   { id: "amber", name: "琥珀金", accent: "#f4c56a", accentSoft: "#ffd98f" },
   { id: "ocean", name: "深海蓝", accent: "#69b7ff", accentSoft: "#9cd3ff" },
   { id: "forest", name: "森林绿", accent: "#6dd7a1", accentSoft: "#a0efc8" },
@@ -73,14 +121,22 @@ const filePath = ref("");
 const isDirty = ref(false);
 const isBusy = ref(false);
 const isMaximized = ref(false);
-const activeThemeId = ref(themes[0].id);
+const activeThemeId = ref("dark");
 const recentFiles = ref([]);
 const showFindPanel = ref(false);
 const searchQuery = ref("");
 const replaceQuery = ref("");
 const autoSaveTimer = ref(null);
+const capsuleTimer = ref(null);
+const lastCapsuleContent = ref("");
+const timeCapsules = ref([]);
+const isCapsuleCollapsed = ref(false);
+
+const TIME_CAPSULE_STORAGE_KEY = "notepad:time-capsule:v1";
+const TIME_CAPSULE_INTERVAL_MS = 20000;
+const MAX_TIME_CAPSULES = 30;
 const editorSettings = ref({
-  autoSave: false,
+  autoSave: true,
   autoSaveInterval: 3000,
   fontSize: 14,
   lineHeight: 1.65,
@@ -163,6 +219,7 @@ function applyOpenResult(result) {
   text.value = result.content ?? "";
   filePath.value = result.filePath ?? "";
   isDirty.value = false;
+  lastCapsuleContent.value = text.value;
 }
 
 async function handleNewFile() {
@@ -174,6 +231,7 @@ async function handleNewFile() {
   text.value = "";
   filePath.value = "";
   isDirty.value = false;
+  lastCapsuleContent.value = "";
 }
 
 async function handleOpen() {
@@ -283,6 +341,74 @@ async function handleClose() {
 function handleTextUpdate(value) {
   text.value = value;
   isDirty.value = true;
+}
+
+function newCapsuleId() {
+  return `capsule_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function loadTimeCapsules() {
+  try {
+    const raw = localStorage.getItem(TIME_CAPSULE_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item) => item && typeof item === "object")
+      .map((item) => ({
+        id: String(item.id || ""),
+        createdAt: Number(item.createdAt || 0),
+        fileName: String(item.fileName || "untitled.txt"),
+        filePath: String(item.filePath || ""),
+        preview: String(item.preview || ""),
+        content: String(item.content || ""),
+      }))
+      .filter((item) => item.id && item.createdAt && item.content)
+      .slice(0, MAX_TIME_CAPSULES);
+  } catch {
+    return [];
+  }
+}
+
+function saveTimeCapsules(capsules) {
+  localStorage.setItem(TIME_CAPSULE_STORAGE_KEY, JSON.stringify(capsules));
+}
+
+function createTimeCapsule(content) {
+  const compact = content.replace(/\s+/g, " ").trim();
+  return {
+    id: newCapsuleId(),
+    createdAt: Date.now(),
+    fileName: currentFileName.value,
+    filePath: filePath.value,
+    preview: compact ? compact.slice(0, 42) : "（空白内容）",
+    content,
+  };
+}
+
+function captureTimeCapsule(force = false) {
+  const content = text.value ?? "";
+  if (!force) {
+    if (!content.trim()) return;
+    if (content === lastCapsuleContent.value) return;
+  }
+  const next = [createTimeCapsule(content), ...timeCapsules.value].slice(0, MAX_TIME_CAPSULES);
+  timeCapsules.value = next;
+  lastCapsuleContent.value = content;
+}
+
+function handleCaptureCapsule() {
+  captureTimeCapsule(true);
+}
+
+function handleRestoreCapsule(capsuleId) {
+  const hit = timeCapsules.value.find((item) => item.id === capsuleId);
+  if (!hit) return;
+  text.value = hit.content;
+  isDirty.value = true;
+  if (hit.filePath && hit.filePath !== filePath.value) {
+    filePath.value = "";
+  }
 }
 
 async function handleThemeChange(themeId) {
@@ -414,6 +540,16 @@ function setupAutoSave() {
   }, editorSettings.value.autoSaveInterval);
 }
 
+function setupTimeCapsule() {
+  if (capsuleTimer.value) {
+    clearInterval(capsuleTimer.value);
+    capsuleTimer.value = null;
+  }
+  capsuleTimer.value = setInterval(() => {
+    captureTimeCapsule(false);
+  }, TIME_CAPSULE_INTERVAL_MS);
+}
+
 function handleKeydown(event) {
   const modifierPressed = isMac ? event.metaKey : event.ctrlKey;
   if (!modifierPressed) return;
@@ -475,8 +611,11 @@ watch(
 
 onMounted(async () => {
   await loadSettings();
+  timeCapsules.value = loadTimeCapsules();
+  lastCapsuleContent.value = text.value;
   window.addEventListener("keydown", handleKeydown);
   setupAutoSave();
+  setupTimeCapsule();
 
   disposeMenuAction = window.desktop.onMenuAction((action) => {
     if (action === "new-file") handleNewFile();
@@ -507,5 +646,16 @@ onBeforeUnmount(() => {
   if (autoSaveTimer.value) {
     clearInterval(autoSaveTimer.value);
   }
+  if (capsuleTimer.value) {
+    clearInterval(capsuleTimer.value);
+  }
 });
+
+watch(
+  timeCapsules,
+  (next) => {
+    saveTimeCapsules(next);
+  },
+  { deep: true }
+);
 </script>
