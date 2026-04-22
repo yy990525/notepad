@@ -15,12 +15,12 @@ contextBridge.exposeInMainWorld("desktop", {
   toggleAlwaysOnTop: (shouldPin) => ipcRenderer.invoke("window:toggle-always-on-top", shouldPin),
   closeWindow: () => ipcRenderer.invoke("window:close"),
   onMenuAction: (callback) => {
-    const listener = (_event, action) => callback(action);
+    const listener = (_unusedEvent, action) => callback(action);
     ipcRenderer.on("menu-action", listener);
     return () => ipcRenderer.removeListener("menu-action", listener);
   },
   onWindowState: (callback) => {
-    const listener = (_event, state) => callback(state);
+    const listener = (_unusedEvent, state) => callback(state);
     ipcRenderer.on("window-state", listener);
     return () => ipcRenderer.removeListener("window-state", listener);
   },

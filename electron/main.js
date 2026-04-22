@@ -1,10 +1,31 @@
-const { app, BrowserWindow, Menu, shell, dialog, ipcMain } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  Menu,
+  shell,
+  dialog,
+  ipcMain,
+} = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
 
 const isDev = !app.isPackaged;
 const settingsPath = path.join(app.getPath("userData"), "settings.json");
+const MAX_RECENT_FILES = 20;
+
+const defaultSettings = {
+  themeId: "dark",
+  recentFiles: [],
+  editorSettings: {
+    autoSave: true,
+    autoSaveInterval: 3000,
+    fontSize: 14,
+    lineHeight: 1.65,
+    wordWrap: true,
+    alwaysOnTop: false,
+  },
+};
 
 function readSettings() {
   try {
@@ -19,6 +40,59 @@ function writeSettings(settings) {
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf8");
 }
 
+function normalizeSettings(raw) {
+  const settings = raw && typeof raw === "object" ? raw : {};
+  const recentFiles = Array.isArray(settings.recentFiles)
+    ? settings.recentFiles
+        .filter((item) => item && typeof item === "object")
+        .map((item) => ({
+          path: String(item.path || ""),
+          name: String(item.name || path.basename(String(item.path || ""))),
+        }))
+        .filter((item) => item.path)
+        .slice(0, MAX_RECENT_FILES)
+    : [];
+
+  return {
+    ...defaultSettings,
+    ...settings,
+    recentFiles,
+    editorSettings: {
+      ...defaultSettings.editorSettings,
+      ...(settings.editorSettings || {}),
+    },
+  };
+}
+
+function getSettings() {
+  return normalizeSettings(readSettings());
+}
+
+function updateSettings(patch) {
+  const current = getSettings();
+  const next = normalizeSettings({
+    ...current,
+    ...(patch || {}),
+    editorSettings: {
+      ...current.editorSettings,
+      ...((patch && patch.editorSettings) || {}),
+    },
+  });
+  writeSettings(next);
+  return next;
+}
+
+function rememberRecentFile(filePath) {
+  if (!filePath) return getSettings();
+  const current = getSettings();
+  const entry = { path: filePath, name: path.basename(filePath) };
+  const recentFiles = [
+    entry,
+    ...current.recentFiles.filter((item) => item.path !== filePath),
+  ].slice(0, MAX_RECENT_FILES);
+  return updateSettings({ recentFiles });
+}
+
 function isExistingExecutable(targetPath) {
   return Boolean(targetPath) && fs.existsSync(targetPath);
 }
@@ -28,7 +102,12 @@ function getWeChatCandidates() {
     process.env.WECHAT_PATH,
     "C:\\Program Files\\Tencent\\WeChat\\WeChat.exe",
     "C:\\Program Files (x86)\\Tencent\\WeChat\\WeChat.exe",
-    path.join(process.env.LOCALAPPDATA || "", "Tencent", "WeChat", "WeChat.exe"),
+    path.join(
+      process.env.LOCALAPPDATA || "",
+      "Tencent",
+      "WeChat",
+      "WeChat.exe",
+    ),
   ].filter(Boolean);
 }
 
@@ -77,15 +156,23 @@ async function readRegistryWeChatPath() {
   ];
 
   for (const root of uninstallRoots) {
-    const installLocation = await readRegistryValue(`${root}\\WeChat`, "InstallLocation");
-    const displayIcon = await readRegistryValue(`${root}\\WeChat`, "DisplayIcon");
+    const installLocation = await readRegistryValue(
+      `${root}\\WeChat`,
+      "InstallLocation",
+    );
+    const displayIcon = await readRegistryValue(
+      `${root}\\WeChat`,
+      "DisplayIcon",
+    );
 
     const candidates = [
       installLocation ? path.join(installLocation, "WeChat.exe") : "",
       displayIcon.replace(/,\d+$/, ""),
     ].filter(Boolean);
 
-    const match = candidates.find((candidate) => isExistingExecutable(candidate));
+    const match = candidates.find((candidate) =>
+      isExistingExecutable(candidate),
+    );
     if (match) {
       return match;
     }
@@ -114,7 +201,9 @@ async function resolveWeChatPath() {
     return settings.wechatPath;
   }
 
-  const fileCandidate = getWeChatCandidates().find((candidate) => isExistingExecutable(candidate));
+  const fileCandidate = getWeChatCandidates().find((candidate) =>
+    isExistingExecutable(candidate),
+  );
   if (fileCandidate) {
     writeSettings({ ...settings, wechatPath: fileCandidate });
     return fileCandidate;
@@ -184,10 +273,22 @@ async function openTextFile() {
 
   const filePath = result.filePaths[0];
   const content = await fs.promises.readFile(filePath, "utf8");
+  rememberRecentFile(filePath);
 
   return {
     canceled: false,
     filePath,
+    content,
+  };
+}
+
+async function openRecentFile(targetPath) {
+  if (!targetPath) return { canceled: true };
+  const content = await fs.promises.readFile(targetPath, "utf8");
+  rememberRecentFile(targetPath);
+  return {
+    canceled: false,
+    filePath: targetPath,
     content,
   };
 }
@@ -200,6 +301,7 @@ async function saveTextFile(payload) {
   }
 
   await fs.promises.writeFile(targetPath, payload.content ?? "", "utf8");
+  rememberRecentFile(targetPath);
   return { canceled: false, filePath: targetPath };
 }
 
@@ -219,6 +321,7 @@ async function saveTextFileAs(payload) {
   }
 
   await fs.promises.writeFile(result.filePath, payload.content ?? "", "utf8");
+  rememberRecentFile(result.filePath);
   return { canceled: false, filePath: result.filePath };
 }
 
@@ -231,21 +334,21 @@ function createAppMenu() {
         {
           label: "打开文本文件",
           accelerator: "CmdOrCtrl+O",
-          click: (menuItem, browserWindow) => {
+          click: (_menuItem, browserWindow) => {
             browserWindow?.webContents.send("menu-action", "open-file");
           },
         },
         {
           label: "保存",
           accelerator: "CmdOrCtrl+S",
-          click: (menuItem, browserWindow) => {
+          click: (_menuItem, browserWindow) => {
             browserWindow?.webContents.send("menu-action", "save-file");
           },
         },
         {
           label: "另存为",
           accelerator: "CmdOrCtrl+Shift+S",
-          click: (menuItem, browserWindow) => {
+          click: (_menuItem, browserWindow) => {
             browserWindow?.webContents.send("menu-action", "save-file-as");
           },
         },
@@ -304,14 +407,17 @@ function createAppMenu() {
 function sendWindowState(mainWindow) {
   mainWindow.webContents.send("window-state", {
     isMaximized: mainWindow.isMaximized(),
+    isAlwaysOnTop: mainWindow.isAlwaysOnTop(),
+    settings: getSettings(),
   });
 }
 
 function createWindow() {
+  const settings = getSettings();
   const mainWindow = new BrowserWindow({
     width: 1200,
     height: 780,
-    minWidth: 960,
+    minWidth: 980,
     minHeight: 640,
     frame: false,
     titleBarStyle: "hidden",
@@ -323,9 +429,13 @@ function createWindow() {
     },
   });
 
+  mainWindow.setAlwaysOnTop(Boolean(settings.editorSettings?.alwaysOnTop));
+
   mainWindow.on("maximize", () => sendWindowState(mainWindow));
   mainWindow.on("unmaximize", () => sendWindowState(mainWindow));
-  mainWindow.webContents.on("did-finish-load", () => sendWindowState(mainWindow));
+  mainWindow.webContents.on("did-finish-load", () =>
+    sendWindowState(mainWindow),
+  );
 
   if (isDev) {
     mainWindow.loadURL("http://localhost:5173");
@@ -337,9 +447,43 @@ function createWindow() {
 
 app.whenReady().then(() => {
   ipcMain.handle("notepad:open-file", async () => openTextFile());
-  ipcMain.handle("notepad:save-file", async (_event, payload) => saveTextFile(payload));
-  ipcMain.handle("notepad:save-file-as", async (_event, payload) => saveTextFileAs(payload));
-  ipcMain.handle("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
+  ipcMain.handle("notepad:open-recent-file", async (_unusedEvent, targetPath) =>
+    openRecentFile(targetPath),
+  );
+  ipcMain.handle("notepad:save-file", async (_unusedEvent, payload) =>
+    saveTextFile(payload),
+  );
+  ipcMain.handle("notepad:save-file-as", async (_unusedEvent, payload) =>
+    saveTextFileAs(payload),
+  );
+  ipcMain.handle("notepad:confirm-discard", async () => {
+    const result = await dialog.showMessageBox({
+      type: "warning",
+      buttons: ["保存", "不保存", "取消"],
+      defaultId: 0,
+      cancelId: 2,
+      title: "未保存改动",
+      message: "当前文件有未保存内容，是否先保存？",
+    });
+    if (result.response === 0) return { action: "save" };
+    if (result.response === 1) return { action: "discard" };
+    return { action: "cancel" };
+  });
+  ipcMain.handle(
+    "notepad:open-containing-folder",
+    async (_unusedEvent, targetPath) => {
+      if (!targetPath) return { ok: false };
+      await shell.showItemInFolder(targetPath);
+      return { ok: true };
+    },
+  );
+  ipcMain.handle("settings:get", async () => getSettings());
+  ipcMain.handle("settings:update", async (_unusedEvent, patch) =>
+    updateSettings(patch),
+  );
+  ipcMain.handle("window:minimize", (event) =>
+    BrowserWindow.fromWebContents(event.sender)?.minimize(),
+  );
   ipcMain.handle("window:toggle-maximize", (event) => {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (!window) return { isMaximized: false };
@@ -350,7 +494,25 @@ app.whenReady().then(() => {
     }
     return { isMaximized: window.isMaximized() };
   });
-  ipcMain.handle("window:close", (event) => BrowserWindow.fromWebContents(event.sender)?.close());
+  ipcMain.handle("window:toggle-always-on-top", (event, shouldPin) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window) return { isAlwaysOnTop: false };
+    window.setAlwaysOnTop(Boolean(shouldPin));
+    const settings = updateSettings({
+      editorSettings: {
+        ...getSettings().editorSettings,
+        alwaysOnTop: window.isAlwaysOnTop(),
+      },
+    });
+    sendWindowState(window);
+    return {
+      isAlwaysOnTop: window.isAlwaysOnTop(),
+      settings,
+    };
+  });
+  ipcMain.handle("window:close", (event) =>
+    BrowserWindow.fromWebContents(event.sender)?.close(),
+  );
 
   createAppMenu();
   createWindow();

@@ -65,6 +65,7 @@
           @input="$emit('line-height-change', Number($event.target.value))"
         />
       </label>
+
     </section>
   </aside>
 </template>
